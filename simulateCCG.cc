@@ -25,7 +25,7 @@ struct Dipole{
   double amplitude, theta, phi;
 };
 
-const string dipoleNames[5] = {"[total]", "[beaming]", "[threshold migration]", "[streaming]", "[unboosted]"};
+const string dipoleNames[5] = {"total", "beam", "thresh_mig", "stream", "unboosted"};
 
 void GenerateMonopoleDirections(double & l, double & b);
 void GenerateDipoleDirections(double & l, double & b, double theta_dip, double phi_dip, double amp);
@@ -156,20 +156,27 @@ int main(){
   
   // Calculate dipole for output maps and save maps
   for (int i=0; i<nMaps; i++){
-    Dipole theDipole = CalculateDipole(outputMap[i]);
-    cout << "Dipole " << dipoleNames[i] << " is " << theDipole.amplitude << "% in the direction (l,b) = (" << theDipole.phi << ", " << theDipole.theta << ")" << endl;
-    stringstream fileName;
-    fileName << "./Output/Augermap_" << i << ".fits";
-    SaveAsFits(outputMap[i], fileName.str());
-  }
 
-  // Remove the dipole from the total map
-  // THealpixMap fitMap = ud_grade_healpix(outputMap[0], 64);
-  // vector<double> test = anafast_healpix(fitMap, 64);
-  // cout << test.size() << endl;
-  // for (int j=0; j < test.size(); j++){
-  //   cout << test[j] << endl;
-  // }
+    // Calculate dipole
+    Dipole theDipole = CalculateDipole(outputMap[i]);
+    cout << "Dipole [" << dipoleNames[i] << "] is " << theDipole.amplitude << "% in the direction (l,b) = (" << theDipole.phi << ", " << theDipole.theta << ")" << endl;
+
+    // Save maps
+    stringstream fileName;
+    string mapPrefix;
+    if (ICRCspectrum) mapPrefix = "Auger";
+    else {
+      stringstream isoPref;
+      isoPref << "pLaw_" << spectralIndex;
+      mapPrefix = isoPref.str();
+    }
+    string distrib;
+    if (genDipole) distrib = "dip";
+    else distrib = "iso";
+    fileName << "./Output/" << mapPrefix << "_" << distrib << "_" << nevents << "_" << dipoleNames[i] << ".fits";
+    SaveAsFits(outputMap[i], fileName.str());
+    
+  }
   
   return 0;
 }
