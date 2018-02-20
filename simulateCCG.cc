@@ -32,6 +32,7 @@ void GenerateDipoleDirections(double & l, double & b, double theta_dip, double p
 double GenThetaFromDipole(double amp);
 double GetRandomEnergyICRC(double Emin, double Emax);
 double GetRandomEnergyPowerLaw(double min, double index);
+double GetRandomEnergyPowerLawBounded(double min, double max, double index);
 Dipole CalculateDipole(THealpixMap & inputMap);
 void SaveAsFits(THealpixMap & theMap, string fileName);
 static inline void loadBar(long long int x, long long int n, int r, int w);
@@ -42,13 +43,15 @@ int main(){
 
   const unsigned int nevents = 1000000; // number of random CRs we will simulate
 
-  // Energy related parameters
-  const bool ICRCspectrum = false; // Use the ICRC17 spectrum? Otherwise power law
+  // Energy related parameters (integral version unless 'differential' is true)
+  const bool ICRCspectrum = true; // Use the ICRC17 spectrum? Otherwise power law
   const double spectralIndex = 2.7; // spectral index in power law case
-  const double Ethr = 8.e18; // eV
+  const double Ethr_low = 1.e19; // eV
+  const bool differential = true;
+  const double Ethr_hi = 1.1e19; // eV
 
   // Boost parameters
-  const double u_motion = 384; // km/s
+  const double u_motion = 384; // km/s - only positive (CHECK THIS - I DON'T THINK IT MATTERS), change (l,b) to reverse direction
   const double l_motion = 264.; // deg
   const double b_motion = 48.; // deg
 
@@ -72,10 +75,16 @@ int main(){
     return 0;
   }
   
-  const double Emin = Ethr / (gamma*(1. + fabs(beta))); // min energy to simulate depends on max. possible boost E shift
-  const double Emax = 1.e21; // eV
-  
-  cout << "Threshold energy = " << Ethr << " eV -> Emin = " << Emin << " eV. Emax = " << Emax << " eV (for non-PL only)." << endl;
+  const double Emin = Ethr_low / (gamma*(1. + fabs(beta))); // min energy to simulate depends on max. possible boost E shift
+  double Emax = 1.e21; // eV
+  if (differential) Emax = Ethr_hi / (gamma*(1. - fabs(beta)));
+
+  if (differential)
+    cout << "[Differential CG calculation]\nEnergy bin = " << Ethr_low << " eV < E < " << Ethr_hi << " eV -> Emin = " << Emin << " eV, Emax = " << Emax << " eV." << endl;
+  else if (!differential && !ICRCspectrum)
+    cout << "[Integral CG calculation]\nThreshold energy = " << Ethr_low << " eV -> Emin = " << Emin << " eV." << endl;
+  else if (!differential && ICRCspectrum)
+    cout << "[Integral CG calculation]\nThreshold energy = " << Ethr_low << " eV -> Emin = " << Emin << " eV, (Auger spec.) Emax = " << Emax << " eV." << endl;
   
   TVector3 uVec(1.,1.,1.);
   uVec.SetTheta((90.-b_motion)*TMath::Pi()/180.); // convert to ROOT convention
@@ -110,7 +119,8 @@ int main(){
 
     // Now get random energy, perform boost, make energy cut
     if (ICRCspectrum) energy = GetRandomEnergyICRC(Emin, Emax);
-    else energy = GetRandomEnergyPowerLaw(Emin, spectralIndex);
+    else if (!ICRCspectrum && !differential) energy = GetRandomEnergyPowerLaw(Emin, spectralIndex);
+    else if (!ICRCspectrum && differential) energy = GetRandomEnergyPowerLawBounded(Emin, Emax, spectralIndex);
     
     angle2Motion = AngularDistance(l_motion, b_motion, l, b);
     cosTheta = cos(angle2Motion*TMath::Pi()/180.);
@@ -125,7 +135,6 @@ int main(){
     double pBoost = (energy/c) * pDotu; // momentum component in direction of boost
     TVector3 pRemainder = (energy/c)*pVec - pBoost*uVec; // remainder of momentum vector perp. to boost direction
     
-    //double pBoostPrime = gamma * (1.*beta + pDotu) * (energy/c); // boosted momentum component in direction of boost
     double pBoostPrime = gamma * (pDotu + beta) * (energy/c); // boosted momentum component in direction of boost
     TVector3 boostedP = pBoostPrime*uVec + pRemainder; // new momentum vector, boosted component + perp. component
     boostedEnergy = c * boostedP.Mag(); // new energy
@@ -136,7 +145,12 @@ int main(){
     int ip_boost = outputMap[0].Ip(l_boost, b_boost);
     int ip = outputMap[0].Ip(l, b); // pixel number for original unboosted direction
    
-    if (boostedEnergy >= Ethr){
+    if (!differential && boostedEnergy >= Ethr_low){
+      outputMap[0][ip_boost] += (1. + beta*cosTheta) / solidAnglePerPix; // total map
+      outputMap[2][ip] += 1. / solidAnglePerPix; // energy threshold migration map
+      eventCounter++;
+    }
+    if (differential && boostedEnergy >= Ethr_low && boostedEnergy <= Ethr_hi){
       outputMap[0][ip_boost] += (1. + beta*cosTheta) / solidAnglePerPix; // total map
       outputMap[2][ip] += 1. / solidAnglePerPix; // energy threshold migration map
       eventCounter++;
@@ -173,7 +187,10 @@ int main(){
     string distrib;
     if (genDipole) distrib = "dip";
     else distrib = "iso";
-    fileName << "./Output/" << mapPrefix << "_" << distrib << "_" << nevents << "_" << dipoleNames[i] << ".fits";
+    string type;
+    if (differential) type = "diff";
+    else type = "int";
+    fileName << "./Output/" << mapPrefix << "_" << distrib << "_" << type << "_" << nevents << "_" << dipoleNames[i] << ".fits";
     SaveAsFits(outputMap[i], fileName.str());
     
   }
@@ -305,6 +322,28 @@ double GetRandomEnergyPowerLaw(double min, double index){
 
   return min * pow(1.-dice,1./(-index+1));
 }
+
+// Simple single power law
+double GetRandomEnergyPowerLawBounded(double Emin, double Emax, double index){
+
+  static TF1 spectrum;
+  static bool init = false;
+  
+  if  (!init) {
+    cout << "[Sampling energies from bounded power law with gamma = " << index << "]" << endl;
+    stringstream funcStr;
+    funcStr << "x^(-1.*" << index << ")";
+    
+    spectrum = TF1("spectrum",funcStr.str().c_str(),Emin,Emax);
+
+    spectrum.SetNpx(1000000);
+    
+    init = true;
+  }
+  
+  return spectrum.GetRandom();
+}
+
 
 Dipole CalculateDipole(THealpixMap & inputMap){
 
