@@ -21,6 +21,7 @@
 
 using namespace std;
 
+// Structure to hold dipole information
 struct Dipole{
   double amplitude, theta, phi;
 };
