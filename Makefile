@@ -34,7 +34,8 @@ LIBDIR = -L${CHEALPIX_LIBDIR} -lchealpix -lm \
 
 #------- alias -----------------------------------------
 execs = \
-	simulateCCG
+	simulateCCG \
+	simulateCCG_byalms
 exeobjs = $(patsubst %.exe,%.o,$(execs))
 
 HEADERS = $(patsubst %.o,%.h,$(libobjs))
@@ -62,6 +63,8 @@ clean :
 
 #-------- specific rules -------------------------------
 simulateCCG : simulateCCG.o $(thelib)
+	$(CXX) -o $@ $^ $(LIBDIR)
+simulateCCG_byalms : simulateCCG_byalms.o $(thelib)
 	$(CXX) -o $@ $^ $(LIBDIR)
 #-------------------------------------------------------
 

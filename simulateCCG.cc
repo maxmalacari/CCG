@@ -18,8 +18,12 @@
 #include "TRandom3.h"
 #include "TF1.h"
 #include "TVector3.h"
+#include "TH1.h"
+#include "TCanvas.h"
 
 using namespace std;
+
+int verbosity = 1; // suppress extra outputs? (1 = no, 0 = yes)
 
 // Structure to hold dipole information
 struct Dipole{
@@ -35,6 +39,8 @@ double GetRandomEnergyICRC(double Emin, double Emax);
 double GetRandomEnergyPowerLaw(double min, double index);
 double GetRandomEnergyPowerLawBounded(double min, double max, double index);
 Dipole CalculateDipole(THealpixMap & inputMap);
+//THealpixMap CalculateQuadrupole(THealpixMap & inputMap);
+void CalculateMultipolarComponents(THealpixMap & inputMap);
 void SaveAsFits(THealpixMap & theMap, string fileName);
 static inline void loadBar(long long int x, long long int n, int r, int w);
 
@@ -42,14 +48,15 @@ int main(){
 
   // --- USER SELECTABLE PARAMETERS ---
 
-  const unsigned int nevents = 1000000; // number of random CRs we will simulate
+  const unsigned int nevents = 100000000; // number of random CRs we will simulate
 
   // Energy related parameters (integral version unless 'differential' is true)
   const bool ICRCspectrum = true; // Use the ICRC17 spectrum? Otherwise power law
   const double spectralIndex = 2.7; // spectral index in power law case
-  const double Ethr_low = 1.e19; // eV
-  const bool differential = true;
+  const double Ethr_low = 8.e18; // eV
+  const bool differential = false;
   const double Ethr_hi = 1.1e19; // eV
+  const bool plotEnergySpectra = true; // do we want to plot the energy spectrum before and after boosting?
 
   // Boost parameters
   const double u_motion = 384; // km/s - only positive (CHECK THIS - I DON'T THINK IT MATTERS), change (l,b) to reverse direction
@@ -71,7 +78,7 @@ int main(){
   const double beta = u_motion * 1.e3 / c;
   const double gamma = 1./sqrt(1. - beta*beta);
   
-  if (u_motion*1.e3 > c) {
+  if (fabs(u_motion)*1.e3 > c) {
     cerr << "Error: boost velocity is too high!" << endl;
     return 0;
   }
@@ -112,6 +119,11 @@ int main(){
 
   double l, b, energy, boostedEnergy, angle2Motion, cosTheta;
   int eventCounter = 0, eventCounterECut=0;
+
+  // Energy spectrum before and after the boost
+  TH1F specBefore("specBefore","",100,Ethr_low,1e20);
+  TH1F specAfterForward("specAfterForward","",100,Ethr_low,1e20);
+  TH1F specAfterBackward("specAfterBackward","",100,Ethr_low,1e20);
   
   while (eventCounter < nevents) {
 
@@ -164,6 +176,11 @@ int main(){
       eventCounterECut++;
     }
 
+    // Add events to the energy spectrum
+    specBefore.Fill(energy);
+    if (AngularDistance(l_motion,b_motion,l_boost,b_boost) < 90.) specAfterForward.Fill(boostedEnergy, 1.+beta*cosTheta);
+    if (AngularDistance(l_motion,b_motion,l_boost,b_boost) > 90.) specAfterBackward.Fill(boostedEnergy, 1.+beta*cosTheta);
+
     loadBar(eventCounter, nevents, 100, 50);
 
   }
@@ -195,6 +212,21 @@ int main(){
     SaveAsFits(outputMap[i], fileName.str());
     
   }
+
+  // WORK IN PROGRESS
+  // Calculate quadrupole map for total map
+  //THealpixMap quadMap = CalculateMultipolarComponents(outputMap[0]);
+  //SaveAsFits(quadMap, "./Output/quadMap.fits");
+  CalculateMultipolarComponents(outputMap[0]);
+  CalculateMultipolarComponents(outputMap[4]);
+
+  // Save energy spectrum histograms
+  TCanvas specCanvas;
+  specCanvas.SetLogx();
+  specCanvas.SetLogy();
+  specAfterForward.Draw();
+  specAfterBackward.Draw("same");
+  specCanvas.SaveAs("./Output/specBefore.pdf");
   
   return 0;
 }
@@ -410,4 +442,51 @@ static inline void loadBar(long long int x, long long int n, int r, int w)
 void SaveAsFits(THealpixMap & theMap, string fileName){
   char* chrName = const_cast<char*>(fileName.c_str());
   theMap.WriteFits(chrName);
+}
+
+
+void CalculateMultipolarComponents(THealpixMap & inputMap){
+
+  static const double lmax = 2;
+  static const unsigned int nSide = 256;
+  
+  // Calculate alms
+  vector<vector<complex<double> > > alms =  anafast_alm_healpix(inputMap, lmax);
+  double a00 = alms[0][0].real();
+  double a10 = alms[1][0].real();
+  double a20 = alms[2][0].real();
+  double a11_re = alms[1][1].real();
+  double a11_im = alms[1][1].imag();
+  double a21_re = alms[2][1].real();
+  double a21_im = alms[2][1].imag();
+  double a22_re = alms[2][2].real();
+  double a22_im = alms[2][2].imag();
+
+  if (verbosity == 1){
+    cout << endl << "[DIAGNOSTICS] - total map alms" << endl;
+    cout << "a00: " << a00 << endl;
+    cout << "a10: " << a10 << endl;
+    cout << "a20: " << a20 << endl;
+    cout << "a11_re: " << a11_re << endl;
+    cout << "a11_im: " << a11_im << endl;
+    cout << "a21_re: " << a21_re << endl;
+    cout << "a21_im: " << a21_im << endl;
+    cout << "a22_re: " << a22_re << endl;
+    cout << "a22_im: " << a22_im << endl;
+  }
+  
+  vector<vector<complex<double> > > alms_mon = { {{a00,0}} };  
+  vector<vector<complex<double> > > alms_dip = { {{a00,0}}, {{a10,0},{a11_re,a11_im}} };
+  vector<vector<complex<double> > > alms_quad = { {{a00,0}}, {{0,0},{0,0}}, {{a20,0},{a21_re,a21_im},{a22_re,a22_im}} };
+  
+  THealpixMap quadMap(nSide, 'G'), dipMap(nSide, 'G'), monMap(nSide, 'G');
+  quadMap.Alm2Map(alms_quad);
+  dipMap.Alm2Map(alms_dip);
+  monMap.Alm2Map(alms_mon);
+
+  SaveAsFits(quadMap, "./Output/quadMap.fits");
+  SaveAsFits(dipMap, "./Output/dipMap.fits");
+  SaveAsFits(monMap, "./Output/monMap.fits");
+
+  //  return quadMap;
 }
